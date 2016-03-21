@@ -5,11 +5,10 @@ function [ regI  ] = non_rigid_core( I, R, alpha, a )
 %
 %R is the "reference" image
 %
-% inT is the input Transformation matrix - set this to zeros(n) at the
-% beginning
 % alpha is a Thirion parameter
 %
 % a sets aggressivness, and should be between 0 and 1
+%
 %This function should go inside a loop until converged 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Thirion paper described by Dirk-Jan Kroon and Slump allows you to make
@@ -20,84 +19,37 @@ function [ regI  ] = non_rigid_core( I, R, alpha, a )
 % descriptions in paper by Cachier on demons algorithm
 % Written on March 14, 2016
 
+%I = I/norm(I);
 [nR, nC] = size(I); %nR and nC are number of rows and columns in the images
+[xxx, yyy] = meshgrid(0:1.0/(nC-1):1, 0:1.0/(nR-1):1); 
+x_I = xxx;
+y_I = yyy;
+
+
 if size(I) ~= size(R)
     %return 0;
     msg = 'Trying to register matrices with a size mismatch'
     error(msg)%There is a big error!!
 end
-%Create matrices x_I and y_I which store the x and y coordinates of each
-%pixel. These matrices are the same size as image I
-for r= 1:nR
-    for c= 1:nC
-        y_I(r,c) = (r-1)/(nR-1);
-        x_I(r,c) = (c-1)/(nC-1);
-    end
-end
 
-% [Sx, Sy] = gradient(R); % Sx and Sy are the gradients of the Reference image. Each are the same size as the image I
-% [Mx, My] = gradient(I); % gradient of the "moving" image
-
-%I didnt like the names S and M... changed them to gRx and gIx (Gradient of
-%R or Gradient of I )
 [gRx, gRy] = gradient(R);
 [gIx, gIy] = gradient(I);
 
-version = 2; %Realized there was a bug in version 1.
 
-thirion = 1; 
+imval_dif = I - R; %difference in intensity values of static and moving images at this pixel 
+              
+uX = imval_dif.*(gRx)./(norm(gRx)^2 + norm(gRy)^2 + (alpha^2)*(imval_dif.^2) )+ imval_dif.*gIx./(norm(gIx)^2 + norm(gIy)^2+ alpha^2*(imval_dif.^2) ); 
+uY = imval_dif.*(gRy)./(norm(gRx)^2 + norm(gRy)^2 + (alpha^2)*(imval_dif.^2) )+ imval_dif.*gIy./(norm(gIx)^2 + norm(gIy)^2 + alpha^2*(imval_dif.^2) ); 
+ 
+%Multiply shift by "aggressiveness" 
+dX = a*uX;
+dY = a*uY;
 
-
-if version ==2
-    
-    if thirion == 1
-        for r = 1: nR
-            for c = 1:nC
-                gradR = [gRx(r,c), gRy(r,c)]; %gradient of reference image at this pixel 
-                gradI = [gIx(r,c), gIy(r,c)]; %gradient of moving image at this pixel
-                imval_dif = I(r,c) - R(r,c); %difference in intensity values of static and moving images at this pixel   
-                u{r,c} = imval_dif*gradR/(norm(gradR)^2 + (alpha^2)*(imval_dif^2) )+ imval_dif*gradI/(norm(gradI)^2 + alpha^2*(imval_dif^2) ); 
-            end
-        end
-    else
-        for r = 1: nR
-            for c = 1:nC
-                gradR = [gRx(r,c), gRy(r,c)]; %gradient of reference image at this pixel
-                gradI = [gIx(r,c), gIy(r,c)]; %gradient of moving image at this pixel
-                imval_dif = I(r,c) - R(r,c); %difference in intensity values of static and moving images at this pixel   
-                u{r,c} = imval_dif*gradR/(norm(gradR)^2)+ imval_dif*gradI/(norm(gradI)^2); 
-            end
-        end
-    
-    end
-    
-end
-
-
-%Version 2: march 18, 2016 :
-%u{r,c} contains the displacement of pixel {r, c}
-%each cell is a vector [ dX, dY ]  
-dX = 0*I;
-dY = 0*I;
-
-for r=1:nR
-    for c = 1:nC
-        tempdX = a*u{r,c}(1);
-        tempdY = a*u{r,c}(2);
-        if isnan(tempdX)
-            tempdX  = 0;
-        end
-        if isnan(tempdY)
-            tempdY =0;
-        end
-        
-        dX(r,c) = tempdX;
-        dY(r,c) = tempdY;
-    end
-end
+%Remove all NaN values from the dX, dY matrices
+dX(isnan(dX)) = 0;
+dY(isnan(dY)) = 0;
 
 %Now maybe we want to smoothen dX and dY !!
-
 smth_dX = dX;
 smth_dY = dY;
 
@@ -114,23 +66,39 @@ y_I_reg = y_I + smth_dY;
 %data first converted to a N x 3 matrix, 
 %where each row is one point, (xi,yi,zi)
 %This is done so scatteredInterpolant class can be used
-rr =1;
-for r = 1:nR
-    for c = 1:nC
-        xx(rr) = x_I_reg(r,c);
-        yy(rr) = y_I_reg(r,c);
-        zz(rr) = I(r,c);
-    end
+
+xx = reshape(x_I_reg, [nC*nR, 1]);
+yy = reshape(y_I_reg, [nC*nR, 1]);
+zz = reshape(I, [nC*nR, 1]);
+
+%xx, yy and zz are row vectors containing the (X, Y and Z) positions of
+%each displaced pixel. 
+%adjust this variable to choose the method of interpolation! You can either
+%set it to 'griddata' or to 'scattin'
+resamp = 'scattin';
+
+zzz = 0*xxx; % This array will store new image values- same dimension as I
+
+%Pick resampling strategy here
+if strcmp(resamp, 'griddata') % using grid data matlab method
+    zzz = griddata(xx,yy,zz,xxx, yyy);
+elseif strcmp(resamp, 'scattin') % using scattered interpolant matlab method - this is recommended
+    F = scatteredInterpolant(xx,yy,zz, 'natural'); % this is the interpolant function
+    zzz = F(xxx,yyy);
 end
 
-%NEED TO WORK THIS OUT !!
-F = scatteredInterpolant(xx,yy,zz, 'natural'); % this is the interpolant function
-regI = 0*I;
-for r=1:nR
-    for c=1:nC
-        regI(r,c) = F(x_I_reg(r,c) , y_I_reg(r,c));
-    end
-end
+%Now convert (X,Y,Z) data to image, regI
+%Is this step needed??
+regI = reshape(zzz , [nR,nC]);
+
+% 
+% figure
+% subplot(1,3,1)
+% imagesc(R); title('Orignial Reference Image'); colormap gray;
+% subplot(1,3,2);
+% imagesc(I); title('Original Moving Image');colormap gray;
+% subplot(1,3,3);
+% imagesc(regI); colormap gray;
 
 end
 
